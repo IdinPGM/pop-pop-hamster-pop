@@ -102,10 +102,10 @@ export default function App() {
   const bgmAudio = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    popAudio.current = new Audio("/audio/options/pop-light.ogg");
+    popAudio.current = new Audio(`${import.meta.env.BASE_URL}audio/options/pop-light.ogg`);
     popAudio.current.preload = "auto";
     popAudio.current.volume = 0.7;
-    bgmAudio.current = new Audio("/audio/happy-adventure.mp3");
+    bgmAudio.current = new Audio(`${import.meta.env.BASE_URL}audio/happy-adventure.mp3`);
     bgmAudio.current.preload = "auto";
     bgmAudio.current.loop = true;
     bgmAudio.current.volume = 0.48;
