@@ -1,4 +1,3 @@
-import { AnimatePresence, motion } from "framer-motion";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 type Stage = "intro" | "countdown" | "playing" | "transition" | "chest" | "opening" | "reward";
@@ -63,26 +62,44 @@ function Clouds() {
   return <div className="clouds" aria-hidden="true">{Array.from({ length: 9 }, (_, i) => <span key={i} style={{ "--i": i } as React.CSSProperties} />)}</div>;
 }
 
-const HamsterBalloon = memo(function HamsterBalloon({ hamster, onPop }: { hamster: Hamster; onPop: (h: Hamster, box: DOMRect) => void }) {
+const HamsterBalloon = memo(function HamsterBalloon({ hamster, onPop, onExpire }: {
+  hamster: Hamster;
+  onPop: (h: Hamster, x: number, y: number) => void;
+  onExpire: (id: number) => void;
+}) {
+  const popFromCenter = (button: HTMLButtonElement) => {
+    const box = button.getBoundingClientRect();
+    onPop(hamster, box.left + box.width / 2, box.top + box.height / 2);
+  };
+
   return (
-    <motion.button
-      className={`hamster ${hamster.color} ${hamster.dull ? "dull" : ""}`}
-      style={{ left: `${hamster.x}%`, width: hamster.size, height: hamster.size }}
-      initial={{ y: "115vh", rotate: -5 }}
-      animate={{ y: "-28vh", rotate: 5 }}
-      exit={{ scale: 0, opacity: 0 }}
-      transition={{
-        y: { duration: hamster.duration, ease: "linear" },
-        rotate: { repeat: Infinity, repeatType: "reverse", duration: 0.7 },
-        scale: { duration: 0.12 },
-        opacity: { duration: 0.12 },
+    <button
+      className="hamster-hit"
+      style={{
+        "--x": `${hamster.x}%`,
+        "--balloon-size": `${hamster.size}px`,
+        "--rise-duration": `${hamster.duration}s`,
+      } as React.CSSProperties}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        onPop(hamster, event.clientX, event.clientY);
       }}
-      onClick={(event) => onPop(hamster, event.currentTarget.getBoundingClientRect())}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          popFromCenter(event.currentTarget);
+        }
+      }}
+      onAnimationEnd={(event) => {
+        if (event.target === event.currentTarget && event.animationName === "balloon-rise") onExpire(hamster.id);
+      }}
       aria-label={hamster.dull ? "ตัวหลอก ลบสามคะแนน" : `แฮมสเตอร์สี${hamster.color}`}
     >
-      <i className="ear left" /><i className="ear right" /><i className="eye left" /><i className="eye right" />
-      <i className="nose" /><i className="cheek left" /><i className="cheek right" /><i className="knot" />
-    </motion.button>
+      <span className={`hamster ${hamster.color} ${hamster.dull ? "dull" : ""}`} aria-hidden="true">
+        <i className="ear left" /><i className="ear right" /><i className="eye left" /><i className="eye right" />
+        <i className="nose" /><i className="cheek left" /><i className="cheek right" /><i className="knot" />
+      </span>
+    </button>
   );
 });
 
@@ -97,18 +114,13 @@ export default function App() {
   const [sound, setSound] = useState(true);
   const [bgmStarted, setBgmStarted] = useState(false);
   const id = useRef(0);
+  const gameEndsAt = useRef(0);
   const scoreRef = useRef<HTMLDivElement>(null);
-  const popAudio = useRef<HTMLAudioElement | null>(null);
+  const popPool = useRef<HTMLAudioElement[]>([]);
+  const popCursor = useRef(0);
   const bgmAudio = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    popAudio.current = new Audio(`${import.meta.env.BASE_URL}audio/options/pop-light.ogg`);
-    popAudio.current.preload = "auto";
-    popAudio.current.volume = 0.7;
-    bgmAudio.current = new Audio(`${import.meta.env.BASE_URL}audio/happy-adventure.mp3`);
-    bgmAudio.current.preload = "auto";
-    bgmAudio.current.loop = true;
-    bgmAudio.current.volume = 0.48;
     return () => bgmAudio.current?.pause();
   }, []);
 
@@ -138,7 +150,12 @@ export default function App() {
 
   useEffect(() => {
     if (stage !== "playing") return;
-    const tick = window.setInterval(() => setTime((n) => n - 1), 1000);
+    gameEndsAt.current = performance.now() + GAME_SECONDS * 1000;
+    setTime(GAME_SECONDS);
+    const tick = window.setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((gameEndsAt.current - performance.now()) / 1000));
+      setTime((current) => current === remaining ? current : remaining);
+    }, 200);
     const spawn = window.setInterval(() => {
       const colors: Color[] = ["red", "yellow", "green"];
       const duration = 3.6 + Math.random() * 1.5;
@@ -152,8 +169,8 @@ export default function App() {
         expiresAt: Date.now() + duration * 1000,
       };
       const now = Date.now();
-      setHamsters((items) => [...items.filter((item) => item.expiresAt > now).slice(-10), hamster]);
-    }, 450);
+      setHamsters((items) => [...items.filter((item) => item.expiresAt > now).slice(-11), hamster]);
+    }, 430);
     return () => { clearInterval(tick); clearInterval(spawn); };
   }, [stage]);
 
@@ -187,25 +204,46 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [sound, stage]);
 
-  const start = () => { setBgmStarted(true); if (sound && bgmAudio.current) void bgmAudio.current.play().catch(() => undefined); setCountdown(3); setStage("countdown"); };
+  const prepareAudio = () => {
+    if (!popPool.current.length) {
+      popPool.current = Array.from({ length: 5 }, () => {
+        const audio = new Audio(`${import.meta.env.BASE_URL}audio/options/pop-light.ogg`);
+        audio.preload = "auto";
+        audio.volume = 0.7;
+        return audio;
+      });
+    }
+    if (!bgmAudio.current) {
+      const bgm = new Audio(`${import.meta.env.BASE_URL}audio/happy-adventure.mp3`);
+      bgm.preload = "auto";
+      bgm.loop = true;
+      bgm.volume = 0.48;
+      bgmAudio.current = bgm;
+    }
+  };
+  const start = () => { prepareAudio(); setBgmStarted(true); if (sound && bgmAudio.current) void bgmAudio.current.play().catch(() => undefined); setCountdown(3); setStage("countdown"); };
   const restart = () => { if (bgmAudio.current) bgmAudio.current.currentTime = 0; setScore(0); setTime(GAME_SECONDS); setHamsters([]); setFeedbacks([]); setCountdown(3); id.current = 0; setStage("intro"); };
-  const pop = useCallback((hamster: Hamster, box: DOMRect) => {
+  const expireHamster = useCallback((hamsterId: number) => {
+    setHamsters((items) => items.filter((hamster) => hamster.id !== hamsterId));
+  }, []);
+
+  const pop = useCallback((hamster: Hamster, x: number, y: number) => {
     setHamsters((items) => items.filter((h) => h.id !== hamster.id));
     const value = hamster.dull ? DECOY_PENALTY : points[hamster.color];
     setScore((current) => Math.max(0, current + value));
     const scoreBox = scoreRef.current?.getBoundingClientRect();
-    setFeedbacks((items) => [...items, {
+    setFeedbacks((items) => [...items.slice(-4), {
       id: hamster.id,
       value,
-      x: box.left + box.width / 2,
-      y: box.top + box.height / 2,
+      x,
+      y,
       targetX: scoreBox ? scoreBox.left + scoreBox.width / 2 : window.innerWidth - 90,
       targetY: scoreBox ? scoreBox.top + scoreBox.height / 2 : 45,
       color: hamster.color,
     }]);
-    if (sound && popAudio.current) {
-      const audio = popAudio.current.cloneNode() as HTMLAudioElement;
-      audio.volume = 0.7;
+    if (sound && popPool.current.length) {
+      const audio = popPool.current[popCursor.current++ % popPool.current.length];
+      audio.currentTime = 0;
       void audio.play().catch(() => undefined);
     }
   }, [sound]);
@@ -214,75 +252,71 @@ export default function App() {
     <main className={`game stage-${stage}`}>
       <Clouds />
       <button className="sound" onClick={() => setSound((v) => !v)} aria-label="เปิดหรือปิดเสียง">{sound ? "♪" : "×"}</button>
-      <AnimatePresence mode="wait">
         {stage === "intro" && (
-          <motion.section className="card intro" key="intro" initial={{ scale: .8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ y: -50, opacity: 0 }}>
+          <section className="card intro">
             <div className="logo-hamster">🐹</div>
             <p className="eyebrow">READY TO POP?</p>
             <h1>POP POP<br/><span>HAMSTER POP!</span></h1>
             <div className="story">
               <div className="speech">ฉันกำลังตามหา <strong>Golden Ticket!</strong><br/>ช่วยจิ้มลูกโป่งเก็บคะแนนให้มากที่สุด แล้วไปเปิดหีบสมบัติกัน!</div>
-              <motion.div className="story-hamster" initial={{ x: 80, rotate: 8 }} animate={{ x: 0, rotate: [8, -4, 3] }} transition={{ type: "spring", duration: .8 }} aria-hidden="true">🐹</motion.div>
+              <div className="story-hamster" aria-hidden="true">🐹</div>
             </div>
             <div className="legend"><span className="dot red">+1</span><span className="dot yellow">+2</span><span className="dot green">+3</span><span className="dot gray">−3</span></div>
             <button className="primary" onClick={start}>START PLAYING</button>
-          </motion.section>
+          </section>
         )}
-        {stage === "countdown" && <motion.div className="countdown" key={countdown} initial={{ scale: 2, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: .4, opacity: 0 }}>{countdown || "GO!"}</motion.div>}
+        {stage === "countdown" && <div className="countdown" key={countdown}>{countdown || "GO!"}</div>}
         {stage === "playing" && (
-          <motion.section className={`playfield ${time <= 5 ? "final-rush" : ""}`} key="playing" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <header><div className="timer"><strong>⏱ {time}</strong><span><i style={{ width: `${(time / GAME_SECONDS) * 100}%` }} /></span></div><motion.div ref={scoreRef} className="score" animate={{ scale: scorePulse ? [1, 1.18, 1] : 1 }}>SCORE <b>{score}</b></motion.div></header>
-            <AnimatePresence>{time <= 5 && <motion.div className="hurry" initial={{ scale: .5, opacity: 0 }} animate={{ scale: [1, 1.08, 1], opacity: 1 }} exit={{ opacity: 0 }} transition={{ scale: { repeat: Infinity, duration: .55 } }}>HURRY!</motion.div>}</AnimatePresence>
-            <AnimatePresence>{hamsters.map((h) => <HamsterBalloon key={h.id} hamster={h} onPop={pop} />)}</AnimatePresence>
-          </motion.section>
+          <section className={`playfield stage-enter ${time <= 5 ? "final-rush" : ""}`}>
+            <header><div className="timer"><strong>⏱ {time}</strong><span><i style={{ width: `${(time / GAME_SECONDS) * 100}%` }} /></span></div><div ref={scoreRef} className={`score ${scorePulse ? "pulse" : ""}`}>SCORE <b>{score}</b></div></header>
+            {time <= 5 && <div className="hurry">HURRY!</div>}
+            {hamsters.map((h) => <HamsterBalloon key={h.id} hamster={h} onPop={pop} onExpire={expireHamster} />)}
+          </section>
         )}
-        {stage === "transition" && <motion.div className="whoosh" key="transition" initial={{ y: "100vh" }} animate={{ y: "-100vh" }} transition={{ duration: 1.2, ease: "easeIn" }}><span/><span/><span/></motion.div>}
+        {stage === "transition" && <div className="whoosh"><span/><span/><span/></div>}
         {stage === "chest" && (
-          <motion.section className="chest-scene" key="chest" initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: 0 }}>
+          <section className="chest-scene stage-enter-up">
             <p>แตะเพื่อเปิดรางวัล!</p>
-            <motion.button className="chest" whileHover={{ scale: 1.05 }} whileTap={{ rotate: [-5, 5, -5, 5, 0] }} onClick={() => setStage("opening")} aria-label="เปิดหีบสมบัติ"><span className="lid"/><span className="box">★</span></motion.button>
+            <button className="chest" onClick={() => setStage("opening")} aria-label="เปิดหีบสมบัติ"><span className="lid"/><span className="box">★</span></button>
             <div className="cloud-platform" />
-          </motion.section>
+          </section>
         )}
         {stage === "opening" && (
-          <motion.section className="opening-scene" key="opening" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <motion.div className="opening-rays" initial={{ scale: .2, rotate: -30, opacity: 0 }} animate={{ scale: 1.8, rotate: 25, opacity: [0, 1, .75] }} transition={{ delay: .5, duration: 1.5 }} />
-            <motion.div className="opening-flash" initial={{ scale: 0, opacity: 0 }} animate={{ scale: [0, .8, 2.4], opacity: [0, 1, 0] }} transition={{ delay: .55, duration: 1.15 }} />
-            <motion.div className="magic-beam" initial={{ scaleY: 0, opacity: 0 }} animate={{ scaleY: [0, 1, 1], opacity: [0, 1, .8] }} transition={{ delay: .55, duration: .8 }} />
-            <motion.div className="opening-chest" animate={{ x: [0, -2, 3, -5, 7, -9, 10, -7, 5, 0], y: [0, 0, -2, 1, -4, 2, -7, 0] }} transition={{ duration: 1.05, ease: "easeIn" }}>
-              <motion.span className="lid" animate={{ rotate: [0, 0, -32], y: [0, 0, -28] }} transition={{ duration: 1.15, times: [0, .62, 1] }} />
+          <section className="opening-scene">
+            <div className="opening-rays" />
+            <div className="opening-flash" />
+            <div className="magic-beam" />
+            <div className="opening-chest">
+              <span className="lid" />
               <span className="box">★</span>
-            </motion.div>
+            </div>
             <div className="magic-particles">{Array.from({ length: 56 }, (_, i) => <i key={i} style={{ "--x": `${3 + (i * 37) % 94}%`, "--y": `${7 + (i * 53) % 84}%`, "--size": `${13 + (i % 4) * 7}px`, "--delay": `${i * -.037}s` } as React.CSSProperties}>{i % 3 ? "✦" : "★"}</i>)}</div>
             <div className="burst-particles">{Array.from({ length: 30 }, (_, i) => <i key={i} style={{ "--angle": `${i * 12}deg`, "--travel": `${-150 - (i % 6) * 34}px`, "--delay": `${.58 + (i % 5) * .018}s` } as React.CSSProperties} />)}</div>
-            <motion.div className="magic-ring" initial={{ scale: .2, opacity: 0 }} animate={{ scale: 2.8, opacity: [0, 1, 0] }} transition={{ delay: .7, duration: .9 }} />
-            <motion.div className="magic-ring ring-two" initial={{ scale: .1, opacity: 0 }} animate={{ scale: 4, opacity: [0, .8, 0] }} transition={{ delay: .95, duration: 1.05 }} />
-            <motion.div className="treasure-star" initial={{ y: 80, scale: 0, opacity: 0 }} animate={{ y: -180, scale: [0, 1.8, 1], rotate: [0, 160, 220], opacity: [0, 1, 1] }} transition={{ delay: .75, duration: 1.25 }}>★</motion.div>
-          </motion.section>
+            <div className="magic-ring" />
+            <div className="magic-ring ring-two" />
+            <div className="treasure-star">★</div>
+          </section>
         )}
         {stage === "reward" && (
-          <motion.section className="reward" key="reward" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <motion.h2 initial={{ y: -35, scale: .8, opacity: 0 }} animate={{ y: 0, scale: 1, opacity: 1 }} transition={{ type: "spring", delay: .05 }}>Congratulation</motion.h2>
+          <section className="reward stage-enter">
+            <h2>Congratulation</h2>
             <div className="rays" />
-            <motion.div className="ticket-wrap" initial={{ y: -200, rotate: -10, scale: .5, opacity: 0 }} animate={{ y: 0, rotate: 0, scale: 1, opacity: 1 }} transition={{ type: "spring", delay: .15 }}>
-              <motion.div className="ticket" animate={{ y: [0, -8, 0], rotate: [-1, 1, -1] }} transition={{ repeat: Infinity, duration: 3.2, ease: "easeInOut" }}><small>YOU GOT A</small><strong>GOLDEN TICKET</strong><span>FINAL SCORE {score}</span></motion.div>
+            <div className="ticket-wrap">
+              <div className="ticket"><small>YOU GOT A</small><strong>GOLDEN TICKET</strong><span>FINAL SCORE {score}</span></div>
               <div className="ticket-sparkles">{Array.from({ length: 10 }, (_, i) => <i key={i} style={{ "--i": i } as React.CSSProperties}>✦</i>)}</div>
-            </motion.div>
+            </div>
             <a className="primary" href="#register">REGISTER NOW</a>
             <button className="secondary" onClick={restart}>↻ PLAY AGAIN</button>
-          </motion.section>
+          </section>
         )}
-      </AnimatePresence>
       {feedbacks.map((feedback) => (
         <div className={`pop-feedback ${feedback.color}`} style={{ left: feedback.x, top: feedback.y }} key={feedback.id}>
           <span className="pop-ring" />
           {Array.from({ length: 10 }, (_, i) => <i key={i} style={{ "--i": i } as React.CSSProperties} />)}
-          <motion.b
-            initial={{ x: 0, y: 0, scale: .8, opacity: 1 }}
-            animate={{ x: feedback.targetX - feedback.x, y: feedback.targetY - feedback.y, scale: [1, 1.35, .45], opacity: [1, 1, 0] }}
-            transition={{ duration: .72, ease: [0.2, 0.8, 0.3, 1] }}
-            onAnimationComplete={() => { setFeedbacks((items) => items.filter((item) => item.id !== feedback.id)); setScorePulse(true); window.setTimeout(() => setScorePulse(false), 250); }}
-          >{feedback.value > 0 ? `+${feedback.value}` : feedback.value}</motion.b>
+          <b
+            style={{ "--dx": `${feedback.targetX - feedback.x}px`, "--dy": `${feedback.targetY - feedback.y}px` } as React.CSSProperties}
+            onAnimationEnd={() => { setFeedbacks((items) => items.filter((item) => item.id !== feedback.id)); setScorePulse(true); window.setTimeout(() => setScorePulse(false), 250); }}
+          >{feedback.value > 0 ? `+${feedback.value}` : feedback.value}</b>
         </div>
       ))}
       <footer>HAMSTERHUB</footer>
